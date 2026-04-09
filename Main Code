@@ -1,1 +1,164 @@
+import streamlit as st
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
 
+# ---------------------------------------------------------
+# STREAMLIT CONFIG
+# ---------------------------------------------------------
+st.set_page_config(page_title="PSX Pro Terminal", layout="wide", initial_sidebar_state="expanded")
+
+# CUSTOM CSS: THE DARK TERMINAL THEME
+st.markdown("""
+    <style>
+        /* 1. Overall Background */
+        .stApp {
+            background-color: #000000 !important;
+        }
+
+        /* 2. Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: #111111 !important;
+            border-right: 1px solid #333333;
+        }
+        
+        /* 3. Force All Text/Labels to White */
+        [data-testid="stSidebar"] label, 
+        [data-testid="stMetricLabel"] p, 
+        .stMarkdown p, h1, h2, h3, span {
+            color: #FFFFFF !important;
+            font-weight: 600 !important;
+        }
+
+        /* 4. Ticker Cards (Dark Glassmorphism) */
+        div[data-testid="column"] {
+            background: #1a1a1a;
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #333333;
+            transition: transform 0.2s;
+        }
+        div[data-testid="column"]:hover {
+            border: 1px solid #4ade80; /* Subtle green glow on hover */
+        }
+
+        /* 5. Live Price Coloring (Neon Green) */
+        div[data-testid="stMetricValue"] {
+            color: #00ff41 !important; /* Classic Terminal Green */
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+        }
+
+        /* 6. Input Boxes in Sidebar */
+        input {
+            background-color: #222222 !important;
+            color: white !important;
+            border: 1px solid #444444 !important;
+        }
+
+        /* 7. Summary Box */
+        .stAlert {
+            background-color: #111111 !important;
+            color: white !important;
+            border: 1px solid #333333 !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# SIDEBAR
+# ---------------------------------------------------------
+with st.sidebar:
+    st.title("📟 SETTINGS")
+    st.markdown("---")
+    
+    my_stocks = ["MEBL", "PAEL", "AIRLINK", "MARI", "TOMCL", "GDL", "NPL"]
+    holdings = {}
+
+    for stock in my_stocks:
+        st.markdown(f"📍 **{stock}**")
+        c1, c2 = st.columns(2)
+        with c1:
+            p = st.number_input("Buy", min_value=0.0, key=f"p_{stock}", label_visibility="collapsed")
+        with c2:
+            q = st.number_input("Qty", min_value=0, step=1, key=f"q_{stock}", label_visibility="collapsed")
+        holdings[stock] = {"buy": p, "qty": q}
+        st.markdown("<div style='margin-bottom: -15px;'></div>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# SCRAPER LOGIC
+# ---------------------------------------------------------
+def scrape_psx():
+    chrome_options = Options()
+    chrome_options.add_experimental_option("debuggerAddress", "127.0.0.1:9222")
+    try:
+        driver = webdriver.Chrome(options=chrome_options)
+        for handle in driver.window_handles:
+            driver.switch_to.window(handle)
+            if "psx.com.pk" in driver.current_url:
+                break
+        
+        scraped = []
+        rows = driver.find_elements(By.XPATH, "//tr")
+        for row in rows:
+            cells = row.find_elements(By.TAG_NAME, "td")
+            if len(cells) >= 8:
+                sym = cells[0].text.strip()
+                if sym in my_stocks:
+                    price = cells[7].text.replace(',', '').strip()
+                    scraped.append([sym, price])
+        return pd.DataFrame(scraped, columns=["SYMBOL", "CURRENT"])
+    except:
+        return pd.DataFrame()
+
+# ---------------------------------------------------------
+# MAIN TERMINAL
+# ---------------------------------------------------------
+header_col, btn_col = st.columns([5, 1])
+with header_col:
+    st.title("🖥️ PSX DARK TERMINAL")
+    st.caption("CONNECTED | LIVE_FEED_ACTIVE")
+
+with btn_col:
+    if st.button("REFRESH"):
+        st.rerun()
+
+data = scrape_psx()
+
+if not data.empty:
+    data["CURRENT"] = pd.to_numeric(data["CURRENT"], errors="coerce")
+    
+    st.markdown("### ⚡ MARKET MONITOR")
+    cols = st.columns(len(my_stocks))
+    for i, s in enumerate(my_stocks):
+        row = data[data["SYMBOL"] == s]
+        if not row.empty:
+            val = row.iloc[0]["CURRENT"]
+            cols[i].metric(label=s, value=f"{val:,.2f}")
+
+    # Calculations
+    total_inv = sum(holdings[s]["buy"] * holdings[s]["qty"] for s in my_stocks)
+    total_now = 0.0
+    for s in my_stocks:
+        qty = holdings[s]["qty"]
+        if qty > 0:
+            price_match = data[data["SYMBOL"] == s]["CURRENT"].values
+            if len(price_match) > 0:
+                total_now += price_match[0] * qty
+
+    st.markdown("---")
+    st.markdown("### 📊 PORTFOLIO_VALUATION")
+    
+    if total_inv > 0:
+        profit = total_now - total_inv
+        perc = (profit / total_inv) * 100
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("INVESTED", f"Rs {total_inv:,.0f}")
+        m2.metric("CURRENT", f"Rs {total_now:,.0f}", delta=f"{profit:,.0f}")
+        m3.metric("RETURN %", f"{perc:.2f}%", delta=f"{perc:.2f}%")
+    else:
+        st.info("AWAITING DATA: Enter holdings in the sidebar to calculate P/L.")
+else:
+    st.error("STREAMS_OFFLINE: Ensure PSX tab is active in Debugger Chrome.")
